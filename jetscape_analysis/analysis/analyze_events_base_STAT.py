@@ -33,7 +33,10 @@ import fastjet as fj
 import fjcontrib
 import fjext
 
+import ROOT
+
 from jetscape_analysis.base import common_base
+from jetscape_analysis.analysis import analyze_events_base
 
 ################################################################
 class AnalyzeJetscapeEvents_BaseSTAT(common_base.CommonBase):
@@ -179,6 +182,13 @@ class AnalyzeJetscapeEvents_BaseSTAT(common_base.CommonBase):
         # Store also the total cross-section (one number per file)
         self.cross_section_dict = {}
 
+        # Event histograms
+        # none for now
+        
+        # Initialize user-defined output objects
+        self.initialize_user_output_objects()
+
+
     # ---------------------------------------------------------------
     # Save output event list into a dataframe
     # ---------------------------------------------------------------
@@ -237,6 +247,25 @@ class AnalyzeJetscapeEvents_BaseSTAT(common_base.CommonBase):
         filename = self.output_file.replace('observables', 'cross_section')
         pq.write_table(cross_section_table, self.output_dir / filename, compression="zstd")
 
+        # Save output objects to root file
+        filename = self.output_file.replace('.parquet', '.root')
+        outputfilename = os.path.join(self.output_dir, filename)
+        fout = ROOT.TFile(outputfilename, 'recreate')
+        fout.cd()
+        for attr in dir(self):
+
+            obj = getattr(self, attr)
+
+            # Write all ROOT histograms and trees to file
+            types = (ROOT.TH1, ROOT.THnBase, ROOT.TTree)
+            if isinstance(obj, types):
+                obj.Write()
+                obj.SetDirectory(0)
+                del obj
+
+        fout.Close()
+
+
     # ---------------------------------------------------------------
     # Fill hadrons into vector of fastjet pseudojets
     #
@@ -291,6 +320,14 @@ class AnalyzeJetscapeEvents_BaseSTAT(common_base.CommonBase):
             sys.exit(f'ERROR: fill_fastjet_constituents -- len(fj_particles) != {len(status_factor)} -- {len(fj_particles)} vs. {len(status_factor)}')
 
         return fj_particles, pid
+
+    # ---------------------------------------------------------------
+    # This function is called once per setting
+    # You must implement this
+    # ---------------------------------------------------------------
+    def initialize_user_output_objects(self):
+        raise NotImplementedError('You must implement initialize_user_output_objects()!')
+
 
     # ---------------------------------------------------------------
     # This function is called once per event
