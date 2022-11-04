@@ -37,6 +37,7 @@ import argparse
 import yaml
 import numpy as np
 import random
+import math
 from collections import defaultdict
 from pathlib import Path
 
@@ -86,35 +87,35 @@ class AnalyzeJetscapeEvents_STAT(analyze_events_base_STAT.AnalyzeJetscapeEvents_
             self.output_file = _input_filename.replace("final_state_hadrons", self.output_file)
             #print(f'Updated output_file name to "{self.output_file}" in order to add identifying indices.')
 
-    #    # Load observable blocks
-    #    self.hadron_observables = config['hadron']
-    #    self.hadron_correlation_observables = config['hadron_correlations']
-    #    self.inclusive_chjet_observables = config['inclusive_chjet']
-    #    self.inclusive_jet_observables = {}
-    #    self.semi_inclusive_chjet_observables = {}
-    #    self.dijet_observables = {}
-    #    if 'inclusive_jet' in config:
-    #        self.inclusive_jet_observables = config['inclusive_jet']
-    #    if 'semi_inclusive_chjet' in config:
-    #        self.semi_inclusive_chjet_observables = config['semi_inclusive_chjet']
-    #    if 'dijet' in config:
-    #        self.dijet_observables = config['dijet']
+        # Load observable blocks
+        self.hadron_observables = config['hadron']
+        self.hadron_correlation_observables = config['hadron_correlations']
+        self.inclusive_chjet_observables = config['inclusive_chjet']
+        self.inclusive_jet_observables = {}
+        self.semi_inclusive_chjet_observables = {}
+        self.dijet_observables = {}
+        if 'inclusive_jet' in config:
+            self.inclusive_jet_observables = config['inclusive_jet']
+        if 'semi_inclusive_chjet' in config:
+            self.semi_inclusive_chjet_observables = config['semi_inclusive_chjet']
+        if 'dijet' in config:
+            self.dijet_observables = config['dijet']
 
-    #    # General jet finding parameters
-    #    self.jet_R = config['jet_R']
-    #    self.min_jet_pt = config['min_jet_pt']
-    #    self.max_jet_y = config['max_jet_y']
+        # General jet finding parameters
+        self.jet_R = config['jet_R']
+        self.min_jet_pt = config['min_jet_pt']
+        self.max_jet_y = config['max_jet_y']
 
-    #    # General grooming parameters'
-    #    self.grooming_settings = {}
-    #    if 'SoftDrop' in config:
-    #        self.grooming_settings = config['SoftDrop']
+        # General grooming parameters'
+        self.grooming_settings = {}
+        if 'SoftDrop' in config:
+            self.grooming_settings = config['SoftDrop']
 
-    #    # If AA, set different options for hole subtraction treatment
-    #    if self.is_AA:
-    #        self.jet_collection_labels = config['jet_collection_labels']
-    #    else:
-    #        self.jet_collection_labels = ['']
+        # If AA, set different options for hole subtraction treatment
+        if self.is_AA:
+            self.jet_collection_labels = config['jet_collection_labels']
+        else:
+            self.jet_collection_labels = ['']
 
     # ---------------------------------------------------------------
     # Initialize output objects
@@ -167,8 +168,28 @@ class AnalyzeJetscapeEvents_STAT(analyze_events_base_STAT.AnalyzeJetscapeEvents_
         h.Sumw2()
         setattr(self, hname, h)
 
+        hname = 'hSumVertexXYPtChHadronDirected'
+        h = ROOT.TH2F(hname, hname, 100, 0, 20, 50,0,100)
+        h.Sumw2()
+        setattr(self, hname, h)
+
+        hname = 'hVertexXPtChHadronDirected'
+        h = ROOT.TH2F(hname, hname, 201,-20.05, 20.05, 50,0,100)
+        h.Sumw2()
+        setattr(self, hname, h)
+
+        hname = 'hVertexXPtChHadronRotate'
+        h = ROOT.TH2F(hname, hname, 201,-20.05, 20.05, 50,0,100)
+        h.Sumw2()
+        setattr(self, hname, h)
 
 
+        for jet_collection_label in self.jet_collection_labels:
+            for jetR in self.jet_R:
+                hname = f'hVertexXPtJetRotate_{jetR}{jet_collection_label}'
+                h = ROOT.TH2F(hname, hname, 201,-20.05, 20.05, 150,0,300)
+                h.Sumw2()
+                setattr(self, hname, h)
 
 
     # ---------------------------------------------------------------
@@ -184,12 +205,46 @@ class AnalyzeJetscapeEvents_STAT(analyze_events_base_STAT.AnalyzeJetscapeEvents_
         # print(event.__dict__)
 
         # Create list of fastjet::PseudoJets (separately for jet shower particles and holes)
+        fj_hadrons_positive, pid_hadrons_positive = self.fill_fastjet_constituents(event, select_status='+')
+        fj_hadrons_negative, pid_hadrons_negative = self.fill_fastjet_constituents(event, select_status='-')
 
         # Create list of charged particles
         fj_hadrons_positive_charged, pid_hadrons_positive_charged = self.fill_fastjet_constituents(event, select_status='+',
                                                                      select_charged=True)
+        fj_hadrons_negative_charged, pid_hadrons_negative_charged = self.fill_fastjet_constituents(event, select_status='-',
+                                                                     select_charged=True)
+
 
         self.fill_hadron_histograms_fj(fj_hadrons_positive_charged, event)
+
+
+        # Fill jet observables
+        for jet_collection_label in self.jet_collection_labels:
+            # If constituent subtraction, subtract the event (with rho determined from holes) -- we can then neglect the holes
+            if jet_collection_label == '_constituent_subtraction':
+                self.bge_rho.set_particles(fj_hadrons_negative)
+                hadrons_positive = self.constituent_subtractor.subtract_event(fj_hadrons_positive)
+                hadrons_negative = None
+
+                self.bge_rho.set_particles(fj_hadrons_negative_charged)
+                hadrons_positive_charged = self.constituent_subtractor.subtract_event(fj_hadrons_positive_charged)
+                hadrons_negative_charged = None
+
+            # For shower_recoil and negative_recombiner cases, keep both positive and negative hadrons
+            else:
+                hadrons_positive = fj_hadrons_positive
+                hadrons_negative = fj_hadrons_negative
+                hadrons_positive_charged = fj_hadrons_positive_charged
+                hadrons_negative_charged = fj_hadrons_negative_charged
+
+            # Find jets and fill observables
+            self.fill_jet_observables(event, hadrons_positive, hadrons_negative,
+                                      hadrons_positive_charged, hadrons_negative_charged,
+                                      pid_hadrons_positive, pid_hadrons_negative,
+                                      pid_hadrons_positive_charged, pid_hadrons_negative_charged,
+                                      jet_collection_label=jet_collection_label)
+
+
 
 
     # ---------------------------------------------------------------
@@ -218,18 +273,38 @@ class AnalyzeJetscapeEvents_STAT(analyze_events_base_STAT.AnalyzeJetscapeEvents_
         vertex_x = event.vertex_x
         vertex_y = event.vertex_y
         vertex_xy_squared = np.sqrt(vertex_x*vertex_x + vertex_y*vertex_y)
+        #angle_vertex_xy = np.arctan(vertex_y / vertex_x)
+        #vertex_vec = np.array([vertex_x, vertex_y])
+        vertex_vec = [vertex_x, vertex_y]
+        x_vec = [1, 0]
 
         getattr(self, 'hPtHat').Fill(pt_hat, ev_weight) 
         getattr(self, 'hVertexX').Fill(vertex_x, ev_weight) 
         getattr(self, 'hVertexY').Fill(vertex_y, ev_weight) 
         getattr(self, 'hVertexXY').Fill(vertex_x, vertex_y, ev_weight) 
         getattr(self, 'hPtHat').Fill(pt_hat, ev_weight) 
+
+        max_angle = 10
     
         # Loop through hadrons
         for hadron in hadrons:
 
             # Fill some basic hadron info
             pt = hadron.pt()
+
+            px = hadron.px()
+            py = hadron.py()
+            #p_vec = np.array([px, py])
+            p_vec = [px, py]
+
+            #angle_hadron_xy = np.arctan(py / px)
+            #angle_vertex_hadron = angle_between(p_vec, vertex_vec) * 180 / np.pi
+            #angle_vertex_hadron = py_ang(p_vec,vertex_vec) * 180 / np.pi
+            angle_vertex_hadron = angle(p_vec,vertex_vec) * 180 / np.pi
+            angle_x_hadron = angle(p_vec,x_vec) * 180 / np.pi
+
+            #print('angle of vertex = ', angle_vertex_xy, ' angle of hadron = ',angle_hadron_xy, 'angle between hadron and vertex = ',angle_vertex_hadron)
+            #print('angle between hadron and vertex = ',angle_vertex_hadron)
 
             # Fill charged hadron histograms (pi+, K+, p+, Sigma+, Sigma-, Xi-, Omega-)
             getattr(self, 'hChHadronPt').Fill(pt, ev_weight) 
@@ -238,6 +313,179 @@ class AnalyzeJetscapeEvents_STAT(analyze_events_base_STAT.AnalyzeJetscapeEvents_
             getattr(self, 'hPtHatPtChHadron').Fill(pt_hat, pt, ev_weight) 
             getattr(self, 'hSumVertexXYPtHatPtChHadron').Fill(vertex_xy_squared,pt_hat, pt, ev_weight) 
 
+            if angle_vertex_hadron < max_angle:
+                getattr(self, 'hSumVertexXYPtChHadronDirected').Fill(vertex_xy_squared, pt, ev_weight) 
+            if angle_x_hadron < max_angle and abs(vertex_y) < 2:
+                getattr(self, 'hVertexXPtChHadronDirected').Fill(vertex_x, pt, ev_weight) 
+
+
+            # rotate axes such that particle travelling parallel to x axis
+            if px > 0:
+                px_rot = math.sqrt(px*px + py*py)
+            else:
+                px_rot = -math.sqrt(px*px + py*py)
+
+            py_rot = 0.
+            angle_rot = math.atan(py/px)
+            vertex_x_rot = vertex_x * math.cos(angle_rot) + vertex_y * math.sin(angle_rot)
+            vertex_y_rot = -vertex_x * math.sin(angle_rot) + vertex_y * math.cos(angle_rot)
+            # print(' - non-rotated - px = ', px,' py = ',py,' vertex_x = ',vertex_x,' vertex_y = ', vertex_y)
+            # print('     - rotated - px = ', px_rot,' py = ',py_rot, ' vertex_x = ',vertex_x_rot,' vertex_y = ', vertex_y_rot, ' angle_rot = ',angle_rot)
+            if abs(vertex_y_rot) < 2:
+                getattr(self, 'hVertexXPtChHadronRotate').Fill(vertex_x_rot, px_rot, ev_weight) 
+
+
+    # ---------------------------------------------------------------
+    # Fill jet observables
+    # For AA, we find three different collections of jets:
+    #
+    #   (1) Using shower+recoil particles, with constituent subtraction
+    #        - No further hole subtraction necessary
+    #
+    #   (2) Using shower+recoil particles, using standard recombiner
+    #       In this case, observable-specific hole subtraction necessary
+    #       We consider three different classes of jet observables:
+    #        (i) Jet pt-like observables -- subtract holes within R
+    #        (ii) Additive substructure -- subtract holes within R
+    #        (iii) Non-additive substructure -- correct the jet pt only
+    #       We also save unsubtracted histograms for comparison.
+    #
+    #   (3) Using shower+recoil+hole particles, using negative recombiner
+    #       In this case, observable-specific hole subtraction necessary
+    #       We consider three different classes of jet observables:
+    #        (i) Jet pt-like observables -- no further hole subtraction
+    #        (ii) Additive substructure -- subtract holes within R
+    #        (iii) Non-additive substructure -- we do no further hole subtraction
+    # ---------------------------------------------------------------
+    def fill_jet_observables(self, event, hadrons_positive, hadrons_negative,
+                             hadrons_positive_charged, hadrons_negative_charged,
+                             pid_hadrons_positive, pid_hadrons_negative,
+                             pid_hadrons_positive_charged, pid_hadrons_negative_charged,
+                             jet_collection_label=''):
+
+        ev_weight = event.event_weight
+        pt_hat = event.pt_hat
+        vertex_x = event.vertex_x
+        vertex_y = event.vertex_y
+
+        # Set the appropriate lists of hadrons to input to the jet finding
+        if jet_collection_label in ['', '_shower_recoil', '_constituent_subtraction']:
+            hadrons_for_jet_finding = hadrons_positive
+            hadrons_for_jet_finding_charged = hadrons_positive_charged
+        elif jet_collection_label in ['_negative_recombiner']:
+            hadrons_for_jet_finding = list(hadrons_positive) + list(hadrons_negative)
+            hadrons_for_jet_finding_charged = list(hadrons_positive_charged) + list(hadrons_negative_charged)
+
+        # Loop through specified jet R
+        for jetR in self.jet_R:
+
+            # Set jet definition and a jet selector
+            jet_def = fj.JetDefinition(fj.antikt_algorithm, jetR)
+            if jet_collection_label in ['_negative_recombiner']:
+                recombiner = fjext.NegativeEnergyRecombiner()
+                jet_def.set_recombiner(recombiner)
+            jet_selector = fj.SelectorPtMin(self.min_jet_pt) & fj.SelectorAbsRapMax(self.max_jet_y)
+
+
+            # Fill jets
+            cs = fj.ClusterSequence(hadrons_for_jet_finding, jet_def)
+            jets = fj.sorted_by_pt(cs.inclusive_jets())
+            jets_selected = jet_selector(jets)
+
+            # loop over jets
+            for jet in jets_selected:
+
+                #   For the shower+recoil case, we need to subtract the hole pt
+                #   For the negative recombiner case, we do not need to adjust the pt, but we want to keep track of the holes
+                holes_in_jet = []
+                if jet_collection_label in ['_shower_recoil', '_negative_recombiner']:
+                    for hadron in hadrons_negative:
+                        if jet.delta_R(hadron) < jetR:
+                            holes_in_jet.append(hadron)
+    
+                # Correct the pt of the jet, if applicable
+                # For pp or negative recombiner or constituent subtraction case, we do not need to adjust the pt
+                # For the shower+recoil case, we need to subtract the hole pt
+                if jet_collection_label in ['', '_negative_recombiner', '_constituent_subtraction']:
+                    jet_pt = jet_pt_uncorrected = jet.pt()
+                    jet_px = jet_px_uncorrected = jet.px()
+                    jet_py = jet_py_uncorrected = jet.py()
+                elif jet_collection_label in ['_shower_recoil']:
+                    negative_pt = 0.
+                    negative_px = 0.
+                    negative_py = 0.
+                    for hadron in holes_in_jet:
+                        negative_pt += hadron.pt()
+                        negative_px += hadron.px()
+                        negative_py += hadron.py()
+                    jet_pt_uncorrected = jet.pt()               # uncorrected pt: shower+recoil
+                    jet_px_uncorrected = jet.px()               # uncorrected pt: shower+recoil
+                    jet_py_uncorrected = jet.py()               # uncorrected pt: shower+recoil
+                    jet_pt = jet_pt_uncorrected - negative_pt   # corrected pt: shower+recoil-holes
+                    jet_px = jet_px_uncorrected - negative_px   # corrected pt: shower+recoil-holes
+                    jet_py = jet_py_uncorrected - negative_py   # corrected pt: shower+recoil-holes
+                    # rotate
+                    jet_px_rot, jet_py_rot, vertex_x_rot, vertex_y_rot = rotate_axes(jet_px, jet_py, vertex_x, vertex_y)
+
+                    if abs(vertex_y_rot) < 2:
+
+                        hname = f'hVertexXPtJetRotate_{jetR}{jet_collection_label}'
+                        getattr(self, hname).Fill(vertex_x_rot, jet_px_rot, ev_weight) 
+
+
+                    #print('corr  : jet pt = {:.2f} jet px = {:.2f} jet py = {:.2f} jet pt from xy = {:.2f}'.format(jet_pt, jet_px, jet_py, math.sqrt(jet_px*jet_px + jet_py*jet_py)))
+                    #print('uncorr: jet pt = {:.2f} jet px = {:.2f} jet py = {:.2f}'.format(jet_pt_uncorrected, jet_px_uncorrected, jet_py_uncorrected))
+                    #print('not rotated: jet px = {:.2f} jet py = {:.2f} vertex x = {:.2f} vertex y = {:.2f}'.format(jet_px, jet_py, vertex_x, vertex_y))
+                    #print('rotated:     jet px = {:.2f} jet py = {:.2f} vertex x = {:.2f} vertex y = {:.2f}'.format(jet_px_rot, jet_py_rot, vertex_x_rot, vertex_y_rot))
+
+    
+
+
+
+
+def rotate_axes(px, py, vertex_x, vertex_y):
+
+    # rotate axes such that particle travelling parallel to x axis
+    if px > 0:
+        px_rot = math.sqrt(px*px + py*py)
+    else:
+        px_rot = -math.sqrt(px*px + py*py)
+
+    py_rot = 0.
+    angle_rot = math.atan(py/px)
+    vertex_x_rot = vertex_x * math.cos(angle_rot) + vertex_y * math.sin(angle_rot)
+    vertex_y_rot = -vertex_x * math.sin(angle_rot) + vertex_y * math.cos(angle_rot)
+
+    return px_rot, py_rot, vertex_x_rot, vertex_y_rot
+
+
+
+
+
+def dotproduct(v1, v2):
+      return sum((a*b) for a, b in zip(v1, v2))
+
+def length(v):
+      return math.sqrt(dotproduct(v, v))
+
+def angle(v1, v2):
+      return math.acos(dotproduct(v1, v2) / ((length(v1) * length(v2))+0.00000001))
+
+def py_ang(v1, v2):
+        """ Returns the angle in radians between vectors 'v1' and 'v2'    """
+        cosang = np.dot(v1, v2)
+        sinang = np.linalg.norm(np.cross(v1, v2))
+        return np.arctan2(sinang, cosang)
+
+def unit_vector(vector):
+    """ Returns the unit vector of the vector.  """
+    return vector / np.linalg.norm(vector)
+
+def angle_between(v1, v2):
+    """ Returns the angle between two vectors.  """
+    v1_u = unit_vector(v1)
+    v2_u = unit_vector(v2)
+    return np.arccos(np.clip(np.dot(v1_u, v2_u), -1.0, 1.0))
 
     # ---------------------------------------------------------------
     # Compute electric charge from pid
